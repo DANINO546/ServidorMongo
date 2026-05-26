@@ -228,6 +228,9 @@ async function cargarDietasSiEstaVacio() {
 }
 
 // 5. ENCENDER SERVIDOR
-app.listen(3000, '0.0.0.0', () => {
-    console.log("Servidor escuchando en http://192.168.0.20:3000");
+// Elige el puerto dinámico que te da Render o usa el 3000 si estás en local
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Servidor escuchando en el puerto ${PORT}`);
 });
