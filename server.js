@@ -1,23 +1,26 @@
 const express = require('express');
-const mongoose = require('mongoose'); // Librería para MongoDB
-const mysql = require('mysql2/promise'); // Librería para MySQL
+const mongoose = require('mongoose'); 
 const app = express();
 
 app.use(express.json());
 
 // ==========================================
-// 1. CONEXIÓN A MONGODB (Usuarios y Perfiles)
+// 1. CONEXIÓN A MONGODB
 // ==========================================
 mongoose.connect('mongodb+srv://Servidor_db_user:8Cz5KnWJW.Kz_p3@cluster0.kpsvyl0.mongodb.net/db1?appName=Cluster0')
     .then(() => {
-        console.log("🍃 Conectado con éxito a MongoDB (Caja Fuerte de Usuarios)");
+        console.log("🍃 Conectado con éxito a MongoDB (Base de datos global)");
+        poblarMongoSiEstaVacio();
     })
     .catch(err => console.log("❌ Error de conexión en MongoDB:", err));
 
-// Modelos de MongoDB
+// ==========================================
+// 2. MODELOS Y ESQUEMAS DE MONGODB
+// ==========================================
+
 const Usuario = mongoose.model('Usuario', new mongoose.Schema({
-    correo: { type: String, unique: true },
-    password: String
+    correo: { type: String, unique: true, required: true },
+    password: { type: String, required: true }
 }));
 
 const Perfil = mongoose.model('Perfil', new mongoose.Schema({
@@ -31,31 +34,58 @@ const Perfil = mongoose.model('Perfil', new mongoose.Schema({
     alergias: String 
 }));
 
+const Alimento = mongoose.model('Alimento', new mongoose.Schema({
+    nombre: String,
+    categoria_plato: String,
+    calorias: Number,
+    proteinas: Number,
+    grasas: Number,
+    carbohidratos: Number
+}));
+
+const Dieta = mongoose.model('Dieta', new mongoose.Schema({
+    objetivo: String, 
+    desayuno: String,
+    colacion1: String,
+    comida: String,
+    colacion2: String,
+    cena: String
+}));
+
 // ==========================================
-// 2. CONEXIÓN A MYSQL EN LA NUBE (Clever Cloud)
+// 3. RUTAS DE AUTENTICACIÓN Y PERFIL
 // ==========================================
-const pool = mysql.createPool({
-    host: 'bvzijdiu7doiy0vrw3le-mysql.services.clever-cloud.com',       
-    user: 'uuqcawlegzh85jlj',            
-    password: '33mmQw5nuv5EUX1AHOVL', 
-    database: 'bvzijdiu7doiy0vrw3le',
-    port: 3306,
-    waitForConnections: true,
-    connectionLimit: 10,
-    ssl: {
-        rejectUnauthorized: false // Obligatorio para la conexión segura en la nube
+
+// Crear Cuenta / Registro (Con validación obligatoria de Gmail)
+app.post('/registro', async (req, res) => {
+    try {
+        const { correo, password } = req.body;
+        
+        // 🛑 VALIDACIÓN OBLIGATORIA: Solo correos de @gmail.com
+        if (!correo || !correo.toLowerCase().endsWith('@gmail.com')) {
+            return res.status(400).json({ 
+                exito: false, 
+                mensaje: "Registro denegado. Solo se permiten correos @gmail.com" 
+            });
+        }
+
+        // Validamos si el usuario ya existe
+        const usuarioExiste = await Usuario.findOne({ correo: correo });
+        if (usuarioExiste) {
+            return res.status(400).json({ exito: false, mensaje: "El correo ya está registrado" });
+        }
+
+        // Creamos y guardamos el nuevo usuario
+        const nuevoUsuario = new Usuario({ correo, password });
+        await nuevoUsuario.save();
+
+        res.json({ exito: true, mensaje: "Cuenta creada con éxito", usuarioId: nuevoUsuario._id });
+    } catch (error) {
+        res.status(500).json({ exito: false, error: "Error al registrar usuario" });
     }
 });
 
-// Ejecutamos la función de validación y llenado automático al arrancar
-cargarAlimentosSiEstaVacio();
-
-
-// ==========================================
-// 3. RUTAS QUE USAN MONGODB
-// ==========================================
-
-// Iniciar Sesión (Busca en MongoDB)
+// Iniciar Sesión 
 app.post('/login', async (req, res) => {
     try {
         const { correo, password } = req.body;
@@ -74,7 +104,7 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// Guardar Perfil (En MongoDB)
+// Guardar Perfil 
 app.post('/perfil/guardar', async (req, res) => {
     try {
         const datos = req.body;
@@ -89,155 +119,115 @@ app.post('/perfil/guardar', async (req, res) => {
     }
 });
 
-
-// ==========================================
-// 4. RUTAS QUE USAN MYSQL
-// ==========================================
-
-// Obtener Alimentos para tu pantalla de Comparador (Busca en MySQL)
-app.get('/alimentos', async (req, res) => {
+// Obtener Perfil desde MongoDB
+app.get('/perfil/:correo', async (req, res) => {
     try {
-        const [lista] = await pool.query('SELECT * FROM alimentos');
-        res.json({ lista: lista }); 
+        const { correo } = req.params;
+        const perfil = await Perfil.findOne({ correo: correo });
+        
+        if (!perfil) {
+            return res.json({ exito: false, mensaje: "Perfil no encontrado" });
+        }
+
+        res.json({ exito: true, perfil: perfil });
     } catch (error) {
-        res.status(500).json({ error: "Error al obtener alimentos de MySQL" });
+        res.status(500).json({ exito: false, error: "Error al obtener el perfil" });
     }
 });
 
-// Dieta Inteligente (Lee alergias en Mongo -> Filtra en MySQL)
+// ==========================================
+// 4. RUTAS DE MÓDULOS DE SALUD
+// ==========================================
+
+app.get('/alimentos', async (req, res) => {
+    try {
+        const lista = await Alimento.find();
+        res.json({ lista: lista }); 
+    } catch (error) {
+        res.status(500).json({ error: "Error al obtener alimentos de MongoDB" });
+    }
+});
+
 app.get('/dieta-inteligente/:correo/:objetivo', async (req, res) => {
     try {
         const { correo, objetivo } = req.params;
+        const dietasDisponibles = await Dieta.find({ objetivo: objetivo });
 
-        const perfil = await Perfil.findOne({ correo: correo });
-        let alergias = [];
-        
-        if (perfil && perfil.alergias) {
-            alergias = perfil.alergias.split(',').map(a => a.trim());
+        if (dietasDisponibles.length === 0) {
+            return res.json({ exito: true, lista: [] });
         }
 
-        let query = "SELECT nombre, categoria_plato, calorias, proteinas FROM alimentos";
-        let queryParams = [];
-
-        if (alergias.length > 0) {
-            const placeholders = alergias.map(() => '?').join(','); 
-            query += ` WHERE nombre NOT IN (${placeholders})`;
-            queryParams = [...alergias];
-        }
-
-        if (objetivo === 'bajar_peso') {
-            query += alergias.length > 0 ? " AND " : " WHERE ";
-            query += "categoria_plato IN ('Verdura', 'Origen Animal') ORDER BY calorias ASC LIMIT 10";
-        } 
-        else if (objetivo === 'ganar_musculo') {
-            query += " ORDER BY proteinas DESC LIMIT 10";
-        }
-
-        const [resultados] = await pool.query(query, queryParams);
-        res.json({ exito: true, lista: resultados });
-
+        res.json({ exito: true, lista: dietasDisponibles });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ exito: false, error: "Error en el motor de dietas" });
+        res.status(500).json({ exito: false, error: "Error al cargar las dietas desde MongoDB" });
     }
 });
 
-
 // ==========================================
-// 5. FUNCIONES DE APOYO (MySQL)
+// 5. SEMBRADOR AUTOMÁTICO DE DATOS
 // ==========================================
-async function cargarAlimentosSiEstaVacio() {
+async function poblarMongoSiEstaVacio() {
     try {
-        // 1. CREADOR DE TABLA AUTOMÁTICO: Si Clever Cloud está vacío, creamos la estructura
-        const queryTabla = `
-            CREATE TABLE IF NOT EXISTS alimentos (
-                id_alimento INT AUTO_INCREMENT PRIMARY KEY,
-                nombre VARCHAR(100),
-                categoria_plato VARCHAR(50),
-                calorias FLOAT,
-                proteinas FLOAT,
-                grasas FLOAT,
-                carbohidratos FLOAT
-            );
-        `;
-        await pool.query(queryTabla);
-        console.log("🔹 Tabla 'alimentos' verificada con éxito en la nube.");
-
-        // 2. Validamos si la tabla ya tiene registros sembrados
-        const [rows] = await pool.query('SELECT COUNT(*) AS total FROM alimentos');
-        const conteo = rows[0].total;
-
-        if (conteo === 0) {
-            console.log("⏳ La base de datos en la nube está vacía. Poblando alimentos reales...");
-            
-            // Estructura correcta con categorías: [nombre, categoria, calorias, proteinas, grasas, carbohidratos]
+        const conteoAlimentos = await Alimento.countDocuments();
+        if (conteoAlimentos === 0) {
+            console.log("⏳ Colección 'Alimentos' vacía. Migrando datos...");
             const listaAlimentos = [
-                ['Manzana', 'Fruta', 52, 0.3, 0.2, 14],
-                ['Plátano', 'Fruta', 89, 1.1, 0.3, 23],
-                ['Naranja', 'Fruta', 47, 0.9, 0.1, 12],
-                ['Fresa', 'Fruta', 32, 0.7, 0.3, 8],
-                ['Uvas', 'Fruta', 69, 0.7, 0.2, 18],
-                ['Mango', 'Fruta', 60, 0.8, 0.4, 15],
-                ['Piña', 'Fruta', 50, 0.5, 0.1, 13],
-                ['Sandía', 'Fruta', 30, 0.6, 0.2, 8],
-                ['Melón', 'Fruta', 34, 0.8, 0.2, 8],
-                ['Papaya', 'Fruta', 43, 0.5, 0.3, 11],
-                ['Pollo', 'Origen Animal', 239, 27, 14, 0],
-                ['Res', 'Origen Animal', 250, 26, 15, 0],
-                ['Cerdo', 'Origen Animal', 242, 27, 14, 0],
-                ['Pescado', 'Origen Animal', 206, 22, 12, 0],
-                ['Atún', 'Origen Animal', 132, 28, 1, 0],
-                ['Salmón', 'Origen Animal', 208, 20, 13, 0],
-                ['Huevo', 'Origen Animal', 155, 13, 11, 1],
-                ['Jamón', 'Origen Animal', 145, 21, 6, 1],
-                ['Salchicha', 'Origen Animal', 301, 12, 27, 2],
-                ['Tocino', 'Origen Animal', 541, 37, 42, 1],
-                ['Leche', 'Lácteo', 42, 3.4, 1, 5],
-                ['Queso', 'Lácteo', 402, 25, 33, 1],
-                ['Yogurt', 'Lácteo', 59, 10, 0.4, 3.6],
-                ['Mantequilla', 'Lácteo', 717, 0.9, 81, 0.1],
-                ['Crema', 'Lácteo', 340, 2, 36, 3],
-                ['Arroz', 'Cereal', 130, 2.7, 0.3, 28],
-                ['Pasta', 'Cereal', 131, 5, 1.1, 25],
-                ['Pan', 'Cereal', 265, 9, 3.2, 49],
-                ['Tortilla', 'Cereal', 218, 5.7, 2.8, 45],
-                ['Avena', 'Cereal', 389, 17, 7, 66],
-                ['Papa', 'Verdura', 77, 2, 0.1, 17],
-                ['Zanahoria', 'Verdura', 41, 0.9, 0.2, 10],
-                ['Brócoli', 'Verdura', 55, 3.7, 0.6, 11],
-                ['Espinaca', 'Verdura', 23, 2.9, 0.4, 3.6],
-                ['Lechuga', 'Verdura', 15, 1.4, 0.2, 2.9],
-                ['Flor de calabaza', 'Verdura', 15, 0.5, 0.1, 3],
-                ['Pepino', 'Verdura', 15, 0.6, 0.1, 3],
-                ['Nopal', 'Verdura', 16, 1.3, 0.1, 3.3],
-                ['Apio', 'Verdura', 16, 0.7, 0.2, 3],
-                ['Rábano', 'Verdura', 16, 0.6, 0.1, 3.4],
-                ['Calabacita', 'Verdura', 17, 1.2, 0.1, 3.4],
-                ['Jitomate', 'Verdura', 18, 0.9, 0.2, 3.9],
-                ['Acelga', 'Verdura', 19, 1.8, 0.2, 3.7],
-                ['Chayote', 'Verdura', 19, 0.7, 0.1, 4.5],
-                ['Soya texturizada', 'Leguminosa', 327, 50, 1, 30],
-                ['Soya (semilla)', 'Leguminosa', 446, 36.5, 20, 30],
-                ['Semilla de calabaza', 'Leguminosa', 559, 30.2, 49, 15],
-                ['Pulpo', 'Origen Animal', 164, 30, 2, 4],
-                ['Carne de conejo', 'Origen Animal', 173, 29, 6, 0],
-                ['Milanesa de pollo', 'Origen Animal', 190, 28, 7, 0]
+                { nombre: 'Manzana', categoria_plato: 'Fruta', calorias: 52, proteinas: 0.3, grasas: 0.2, carbohidratos: 14 },
+                { nombre: 'Plátano', categoria_plato: 'Fruta', calorias: 89, proteinas: 1.1, grasas: 0.3, carbohidratos: 23 },
+                { nombre: 'Pollo', categoria_plato: 'Origen Animal', calorias: 239, proteinas: 27, grasas: 14, carbohidratos: 0 },
+                { nombre: 'Res', categoria_plato: 'Origen Animal', calorias: 250, proteinas: 26, grasas: 15, carbohidratos: 0 },
+                { nombre: 'Atún', categoria_plato: 'Origen Animal', calorias: 132, proteinas: 28, grasas: 1, carbohidratos: 0 },
+                { nombre: 'Queso', categoria_plato: 'Lácteo', calorias: 402, proteinas: 25, grasas: 33, carbohidratos: 1 },
+                { nombre: 'Arroz', categoria_plato: 'Cereal', calorias: 130, proteinas: 2.7, grasas: 0.3, carbohidratos: 28 },
+                { nombre: 'Avena', categoria_plato: 'Cereal', calorias: 389, proteinas: 17, grasas: 7, carbohidratos: 66 },
+                { nombre: 'Espinaca', categoria_plato: 'Verdura', calorias: 23, proteinas: 2.9, grasas: 0.4, carbohidratos: 3.6 },
+                { nombre: 'Lechuga', categoria_plato: 'Verdura', calorias: 15, proteinas: 1.4, grasas: 0.2, carbohidratos: 2.9 },
+                { nombre: 'Soya texturizada', categoria_plato: 'Leguminosa', calorias: 327, proteinas: 50, grasas: 1, carbohidratos: 30 }
             ];
+            await Alimento.insertMany(listaAlimentos);
+            console.log("✅ Alimentos sembrados con éxito.");
+        }
 
-            const queryInsert = 'INSERT INTO alimentos (nombre, categoria_plato, calorias, proteinas, grasas, carbohidratos) VALUES ?';
-            await pool.query(queryInsert, [listaAlimentos]);
-            
-            console.log("✅ ¡Éxito! Los 50 alimentos han sido sembrados en Clever Cloud.");
-        } else {
-            console.log(`ℹ️ Clever Cloud ya contiene ${conteo} alimentos registrados. Saltando población.`);
+        const conteoDietas = await Dieta.countDocuments();
+        if (conteoDietas === 0) {
+            console.log("⏳ Colección 'Dietas' vacía. Creando menús fijos...");
+            const dietasSemilla = [
+                {
+                    objetivo: 'vegano',
+                    desayuno: 'Licuado de plátano con leche de soya y avena',
+                    colacion1: 'Manzana picada con almendras',
+                    comida: 'Tacos de soya texturizada con nopales asados y jitomate',
+                    colacion2: 'Pepino con limón y sal',
+                    cena: 'Ensalada de espinacas fresas y nueces'
+                },
+                {
+                    objetivo: 'bajar_peso',
+                    desayuno: 'Claras de huevo con espinacas y 1 tortilla de maíz',
+                    colacion1: 'Una taza de fresas completas',
+                    comida: 'Pechuga de pollo asada con brócoli al vapor y lechuga',
+                    colacion2: 'Bastones de apio y jícama',
+                    cena: 'Atún en agua con rodajas de jitomate y pepino'
+                },
+                {
+                    objetivo: 'ganar_musculo',
+                    desayuno: '3 huevos revueltos con jamón y un plato de avena',
+                    colacion1: 'Yogurt griego con plátano',
+                    comida: 'Filete de res a la plancha con una taza de arroz y verduras',
+                    colacion2: 'Licuado de leche con crema de cacahuate',
+                    cena: 'Filete de salmón o pollo con ensalada mixta'
+                }
+            ];
+            await Dieta.insertMany(dietasSemilla);
+            console.log("✅ Menús de prueba sembrados.");
         }
     } catch (error) {
-        console.error("❌ Error al poblar alimentos en MySQL:", error);
+        console.error("❌ Error al inicializar datos:", error);
     }
 }
 
-// Encender el Servidor
+// Encender Servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor híbrido escuchando en el puerto ${PORT}`);
+    console.log(`🚀 Servidor MongoDB corriendo en el puerto ${PORT}`);
 });
